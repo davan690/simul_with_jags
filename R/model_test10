@@ -1,0 +1,54 @@
+model {
+
+   # Observation model
+   for(i in 1:nYears) {
+     for(j in 1:nGrids) {
+       Ytau[i, j] ~ dnorm(mu.Ytau, tau[5])
+       Y[i, j] ~ dnorm(X[i, j], Ytau[i, j] + 10)
+       # model seed as an overall mean (alpha1), an offset for each year (alpha2) and an offset for each grid (alpha3)
+       seed[i, j] ~ dnorm(mu.r[i, j], tau[1])
+       mu.r[i, j] <- alpha1 + alpha2[i] + alpha3[j]
+     }
+   }
+   
+  # priors for the observation and seed models
+   for(i in 1:nYears) {
+     alpha2[i] ~ dnorm(0, tau[2])
+   }
+
+   for(j in 1:nGrids) {
+     alpha3[j] ~ dnorm(0, tau[3])
+     X[1, j] ~ dnorm(0, 0.1) 
+     simX[1, j] <- X[1, j]    
+   }
+   
+   # Process model
+   for(j in 1:nGrids) {
+     for(i in 2:nYears) {
+
+       X[i, j] ~ dnorm(predX[i, j], tau[4])
+       # include rainfall on the raw scale (e.g. exp(log(rain)) - this fits much better
+       predX[i, j] <- X[i-1, j] + (r + beta.seed * (seed[i-lag, j]) - d * X[i-1, j]) * td[i] - g * X[i-1, j] * killr[i,j]
+
+       # get independent estimates for the fitted process model
+       simX[i, j] ~ dnorm(predsimX[i, j], tau[4])
+       
+       predsimX[i, j] <- simX[i-1, j] + (r + beta.seed * (seed[i-lag, j]) - d * simX[i-1, j]) * td[i] - g * X[i-1, j] * killr[i,j]
+     }
+   }
+
+  # priors
+   mu.Ytau ~ dnorm(0, 0.001)T(0, )
+   r ~ dnorm(0, 0.001)T(0, )
+   beta.seed ~ dnorm(0, 0.01)
+   
+   d ~ dnorm(0, 0.01)T(0, )
+   g ~ dnorm(0, 0.01)T(0, )
+   alpha1 ~ dnorm(0, 0.001)
+
+   for(i in 1:5) {
+     tau[i] <- 1 / (sigma[i] * sigma[i])
+     sigma[i] ~ dunif(0, 100)
+   }
+
+  }

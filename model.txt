@@ -1,0 +1,90 @@
+model {
+
+   # Observation model
+   for(i in 1:nYears) {
+     for(j in 1:nGrids) {
+       Ntau.rat[i, j] ~ dnorm(mu.Ntau.rat, tau[1])           
+       N.rat[i, j] ~ dnorm(X.rat[i, j], tau[9])     
+
+       Ntau.poss[i, j] ~ dnorm(mu.Ntau.poss, tau[2])           
+       N.poss[i, j] ~ dnorm(X.poss[i, j], tau[10])     
+
+       Ntau.mouse[i, j] ~ dnorm(mu.Ntau.mouse, tau[2])           
+       N.mouse[i, j] ~ dnorm(X.mouse[i, j], tau[11])     
+
+       # model seed as an overall mean (alpha1), an offset for each year (alpha2) and an offset for each grid (alpha3)
+       seed[i, j] ~ dnorm(mu.r[i, j], tau[3])
+       mu.r[i, j] <- alpha1 + alpha2[i] + alpha3[j]
+     }
+   }
+   
+  # priors for the observation and seed models
+   for(i in 1:nYears) {
+     alpha2[i] ~ dnorm(0, tau[4])
+   }
+
+   for(j in 1:nGrids) {
+     alpha3[j] ~ dnorm(0, tau[5])
+     
+     X.rat[1, j] ~ dnorm(0, 0.1) 
+     simX.rat[1, j] <- X.rat[1, j]    
+     
+     X.poss[1, j] ~ dnorm(0, 0.1) 
+     simX.poss[1, j] <- X.poss[1, j]    
+
+     X.mouse[1, j] ~ dnorm(0, 0.1) 
+     simX.mouse[1, j] <- X.mouse[1, j]    
+   }
+   
+   # Process model
+   for(j in 1:nGrids) {
+     for(i in 2:nYears) {
+
+       X.rat[i, j] ~ dnorm(predX.rat[i, j], tau[6])
+       predX.rat[i, j] <- X.rat[i-1, j] + (r.rat + beta.seed.rat * (seed[i-lag, j]) - d.rat * X.rat[i-1, j] - m.rat * prr[j] + rat.poss * X.poss[i-1, j]) * td[i]
+
+       simX.rat[i, j] ~ dnorm(predsimX.rat[i, j], tau[6])
+       predsimX.rat[i, j] <- simX.rat[i-1, j] + (r.rat + beta.seed.rat * (seed[i-lag, j]) - d.rat * simX.rat[i-1, j] - m.rat * prr[j] + rat.poss * simX.poss[i-1, j]) * td[i]
+
+       X.poss[i, j] ~ dnorm(predX.poss[i, j], tau[7])
+       predX.poss[i, j] <- X.poss[i-1, j] + (r.poss + beta.seed.poss * (seed[i-lag, j]) - d.poss * X.poss[i-1, j] + poss.rat * X.rat[i-1, j]) * td[i]
+
+       simX.poss[i, j] ~ dnorm(predsimX.poss[i, j], tau[7])
+       predsimX.poss[i, j] <- simX.poss[i-1, j] + (r.poss + beta.seed.poss * (seed[i-lag, j]) - d.poss * simX.poss[i-1, j] + poss.rat * simX.rat[i-1, j]) * td[i]
+
+       X.mouse[i, j] ~ dnorm(predX.mouse[i, j], tau[8])
+       predX.mouse[i, j] <- X.mouse[i-1, j] + (r.mouse + beta.seed.mouse * (seed[i-lag, j]) - d.mouse * X.mouse[i-1, j] + mouse.rat * X.rat[i-1, j]) * td[i]
+
+       simX.mouse[i, j] ~ dnorm(predsimX.mouse[i, j], tau[8])
+       predsimX.mouse[i, j] <- simX.mouse[i-1, j] + (r.mouse + beta.seed.mouse * (seed[i-lag, j]) - d.mouse * simX.mouse[i-1, j] + mouse.rat * simX.rat[i-1, j]) * td[i]
+     }
+   }
+
+  # priors
+   mu.Ntau.rat ~ dnorm(0, 0.001)T(0, )
+   r.rat ~ dnorm(0, 0.001)T(0, )
+   beta.seed.rat ~ dnorm(0, 0.01)
+   d.rat ~ dnorm(0, 0.01)T(0, )
+   m.rat ~ dnorm(0, 0.01)T(0, )
+   rat.poss ~ dnorm(0, 0.01)
+
+   mu.Ntau.poss ~ dnorm(0, 0.001)T(0, )
+   r.poss ~ dnorm(0, 0.001)T(0, )
+   beta.seed.poss ~ dnorm(0, 0.01)
+   d.poss ~ dnorm(0, 0.01)T(0, )
+   poss.rat ~ dnorm(0, 0.01)
+
+   mu.Ntau.mouse ~ dnorm(0, 0.001)T(0, )
+   r.mouse ~ dnorm(0, 0.001)T(0, )
+   beta.seed.mouse ~ dnorm(0, 0.01)
+   d.mouse ~ dnorm(0, 0.01)T(0, )
+   mouse.rat ~ dnorm(0, 0.01)
+
+   alpha1 ~ dnorm(0, 0.001)
+
+   for(i in 1:11) {
+     tau[i] <- 1 / (sigma[i] * sigma[i])
+     sigma[i] ~ dunif(0, 100)
+   }
+
+  }

@@ -1,0 +1,726 @@
+---
+title: "Simulate MPD data"
+author: "Anthony Davidson"
+output:
+  pdf_document: default
+  html_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+require(runjags)
+require(mcmcplots)
+# sets paths for computers with other software components
+# this code block produces an enviroment warning
+# but not sure how to sort depenancies still
+# Feb2020
+# myPaths <- .libPaths("C:/Program Files/R/R-3.6.2/library")
+# myPaths <- c(myPaths)
+# .libPaths(myPaths)  # add new path
+# .libPaths()
+```
+
+## Motivation
+
+Recently, I have been struggling with simulating data from complex hierarchical models. After several unsuccessful attempts in `R`, I remembered the good old times when I was using `WinBUGS` (more than 10 years already!) and the possibility to simulate data with it. I'm using `Jags` now, and a quick search in Google with 'simulating data with jags' led me to [a complex example](https://www.georg-hosoya.de/wordpress/?p=799) and [a simple example](https://stackoverflow.com/questions/38295839/simulate-data-in-jags-r2jags).
+
+Here, I illustrate the possibility to use Jags to simulate data with two examples that might be of interest to population ecologists: first a linear regression, second a Cormack-Jolly-Seber capture-recapture model to estimate animal survival (formulated as a state-space model). 
+
+Simulating data with `Jags` is convenient because you can use (almost) the same code for simulation and inference, and you can carry out simulation studies (bias, precision, interval coverage) in the same environment (namely `Jags`). 
+
+## Packages
+
+We first load the packages we will need for this tutorial:
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(R2jags)
+library(runjags)
+library(mcmcplots)
+```
+
+## Capture-recapture example
+
+I now illustrate the use of `Jags` to simulate data from a Cormack-Jolly-Seber model with constant survival and recapture probabilities. I assume that the reader is familiar with this model and its formulation as a state-space model.
+
+```{r}
+lag.sp = 0
+# library(jagsUI)
+# ##data import and setup
+# source("./R/data_wrangling_script.R")
+# source("./R/model_data_setup.R")
+# source("./R/varInflation_fun.R")
+# # source("./R/jags_model_function_run.R")
+# source("./R/jags_outputs_function_run.R")
+```
+
+### JAGS model
+
+```{r}
+  library(tidyverse)
+  library(jagsUI)
+  
+  # setwd("c:\\users\\s429217\\onedrive\\data\\mpd\\state space\\data")
+  
+############################################################################
+## Read in rat, mouse and possum abundance data on log scale
+
+  rat.pos <- read.csv("./data/raw/Rat possum mouse log N estimates.csv")
+  rat.pos <- dplyr:::select(rat.pos, -X)
+  glimpse(rat.pos)          
+  
+  #ant added
+  # choose species
+  rat.pos$xx <- rat.pos$rat_abun
+  rat.pos$xxse <- rat.pos$rat_sd
+  
+  # choose treatments
+  # exclude "Possum + rat removal" treatment when analysing rats
+  # exclude the possum removal treatments when analysing possums
+  
+  rat.pos <- filter(rat.pos, treat %in% c("Possum removal", "Control", "Stoat removal"))
+  
+  # exclude first two trips
+  rat.pos <- filter(rat.pos, month > 2)     
+  
+# exclude first few trips
+  table(rat.pos$month)
+  # rat.pos <- filter(rat.pos, month > 2)
+  
+  
+  ggplot(rat.pos, aes(y = xx, x = month)) +
+    geom_point() +
+    geom_line(data = filter(rat.pos, !is.na(xx))) +
+    geom_errorbar(aes(ymin = xx - xxse, ymax = xx + xxse)) +
+    facet_wrap(~ grid) +
+    theme_bw()                                                          
+  
+############################################################################
+## Read in seed trap data
+  trap <- read.csv("./data/raw/seed trap data.csv")
+  trap <- dplyr:::select(trap, -X)
+  glimpse(trap)
+  
+  trap$month <- ifelse(trap$grid == "Okopeka East" & is.na(trap$month) == T, 31, trap$month)
+  trap$month <- ifelse(trap$grid == "Okopeka West" & is.na(trap$month) == T, 31, trap$month)
+  
+## Summarise by seed trap, summing seed dry weights
+  seed.trap <- group_by(trap, seed.trap, grid, month) %>%
+               summarise(seed_mass = sum(dry.wt, na.rm=T),
+               seed_mass_poss_pref = sum(dry.wt[spp %in% c("Beitaw", "Eladen", "Rubcis", "Melram", "Hedarb", "Pencor")], na.rm=T),
+               seed_mass_poss_avoid = sum(dry.wt[spp %in% c("Ripsca", "Prufer")], na.rm=T))
+
+# convert to log scale
+  seed.trap <- seed.trap %>%
+               mutate(seed_mass = log(seed_mass + 0.001),
+                      seed_mass_poss_pref = log(seed_mass_poss_pref + 0.001),
+                      seed_mass_poss_avoid = log(seed_mass_poss_avoid + 0.001))
+                     
+# now summarise by grid and month calculating mean seed trap values
+  mean.seed <- group_by(seed.trap, grid, month) %>%
+               summarise(seed_mass = mean(seed_mass, na.rm=T),
+               seed_mass_poss_pref = mean(seed_mass_poss_pref, na.rm=T),
+               seed_mass_poss_avoid = mean(seed_mass_poss_avoid, na.rm=T)) 
+               
+  ggplot(mean.seed, aes(y = seed_mass, x = month)) +
+    geom_point() +
+    geom_line(data = filter(mean.seed, !is.na(seed_mass))) +
+    facet_wrap(~ grid) +
+    theme_bw()
+                  
+  
+############################################################################
+  
+  dat <- left_join(rat.pos, mean.seed)
+  dat <- mutate(dat, grid = factor(grid))
+  
+## Define years
+  dat$year <- 4            
+  dat$year <- ifelse(dat$month <= 30, 3, dat$year)
+  dat$year <- ifelse(dat$month <= 18, 2, dat$year)
+  dat$year <- ifelse(dat$month <= 6, 1, dat$year)
+  table(dat$month, dat$year)
+  
+# convert to decimal years
+  dat$year.dec <- dat$month / 12
+  
+
+############################################################################
+# model abundance
+################################################################################
+# matrices to store data
+
+# N is mean estimated log abundance from mark-recapture model 
+  N.rat <- tapply(dat$rat_abun, list(dat$year.dec, dat$grid), mean)
+
+# Nse is standard error of log abundance from mark-recapture model
+  Nse.rat <- tapply(dat$rat_sd, list(dat$year.dec, dat$grid), mean)
+# convert Nse to precision
+  Ntau.rat <- 1 / Nse.rat^2
+
+  N.poss <- tapply(dat$poss_abun, list(dat$year.dec, dat$grid), mean)
+  Nse.poss <- tapply(dat$poss_sd, list(dat$year.dec, dat$grid), mean)
+  Ntau.poss <- 1 / Nse.poss^2
+
+  N.mouse <- tapply(dat$mouse_abun, list(dat$year.dec, dat$grid), mean)
+  Nse.mouse <- tapply(dat$mouse_sd, list(dat$year.dec, dat$grid), mean)
+  Ntau.mouse <- 1 / Nse.mouse^2
+
+################################################################################
+  seed <- tapply(dat$seed_mass, list(dat$year.dec, dat$grid), mean)
+# centre seed
+  nseed <- (seed - mean(seed, na.rm = T))
+
+# measurement time
+  year.dec <- as.numeric(rownames(seed))
+
+# time gap between measurements
+  td <- year.dec - lag(year.dec)
+  
+  nYears <- dim(N.rat)[1]
+  nGrids <- dim(N.rat)[2]
+  
+# coding to identify Possum + rat removal grids
+  #rats constantly 
+  prr <- ifelse(table(dat$treat, dat$grid)[2, ] > 0, 1, 0)
+  
+  lag.sp <- 0
+
+  mod <- "model {
+
+   # Observation model
+   for(i in 1:nYears) {
+     for(j in 1:nGrids) {
+       Ntau.rat[i, j] ~ dnorm(mu.Ntau.rat, tau[1])           
+       N.rat[i, j] ~ dnorm(X.rat[i, j], tau[9])     
+
+       Ntau.poss[i, j] ~ dnorm(mu.Ntau.poss, tau[2])           
+       N.poss[i, j] ~ dnorm(X.poss[i, j], tau[10])     
+
+       Ntau.mouse[i, j] ~ dnorm(mu.Ntau.mouse, tau[2])           
+       N.mouse[i, j] ~ dnorm(X.mouse[i, j], tau[11])     
+
+       # model seed as an overall mean (alpha1), an offset for each year (alpha2) and an offset for each grid (alpha3)
+       seed[i, j] ~ dnorm(mu.r[i, j], tau[3])
+       mu.r[i, j] <- alpha1 + alpha2[i] + alpha3[j]
+     }
+   }
+   
+  # priors for the observation and seed models
+   for(i in 1:nYears) {
+     alpha2[i] ~ dnorm(0, tau[4])
+   }
+
+   for(j in 1:nGrids) {
+     alpha3[j] ~ dnorm(0, tau[5])
+     
+     X.rat[1, j] ~ dnorm(0, 0.1) 
+     simX.rat[1, j] <- X.rat[1, j]    
+     
+     X.poss[1, j] ~ dnorm(0, 0.1) 
+     simX.poss[1, j] <- X.poss[1, j]    
+
+     X.mouse[1, j] ~ dnorm(0, 0.1) 
+     simX.mouse[1, j] <- X.mouse[1, j]    
+   }
+   
+   # Process model
+   for(j in 1:nGrids) {
+     for(i in 2:nYears) {
+
+       X.rat[i, j] ~ dnorm(predX.rat[i, j], tau[6])
+       predX.rat[i, j] <- X.rat[i-1, j] + (r.rat + beta.seed.rat * (seed[i-lag, j]) - d.rat * X.rat[i-1, j] - m.rat * prr[j] + rat.poss * X.poss[i-1, j]) * td[i]
+
+       simX.rat[i, j] ~ dnorm(predsimX.rat[i, j], tau[6])
+       predsimX.rat[i, j] <- simX.rat[i-1, j] + (r.rat + beta.seed.rat * (seed[i-lag, j]) - d.rat * simX.rat[i-1, j] - m.rat * prr[j] + rat.poss * simX.poss[i-1, j]) * td[i]
+
+       X.poss[i, j] ~ dnorm(predX.poss[i, j], tau[7])
+       predX.poss[i, j] <- X.poss[i-1, j] + (r.poss + beta.seed.poss * (seed[i-lag, j]) - d.poss * X.poss[i-1, j] + poss.rat * X.rat[i-1, j]) * td[i]
+
+       simX.poss[i, j] ~ dnorm(predsimX.poss[i, j], tau[7])
+       predsimX.poss[i, j] <- simX.poss[i-1, j] + (r.poss + beta.seed.poss * (seed[i-lag, j]) - d.poss * simX.poss[i-1, j] + poss.rat * simX.rat[i-1, j]) * td[i]
+
+       X.mouse[i, j] ~ dnorm(predX.mouse[i, j], tau[8])
+       predX.mouse[i, j] <- X.mouse[i-1, j] + (r.mouse + beta.seed.mouse * (seed[i-lag, j]) - d.mouse * X.mouse[i-1, j] + mouse.rat * X.rat[i-1, j]) * td[i]
+
+       simX.mouse[i, j] ~ dnorm(predsimX.mouse[i, j], tau[8])
+       predsimX.mouse[i, j] <- simX.mouse[i-1, j] + (r.mouse + beta.seed.mouse * (seed[i-lag, j]) - d.mouse * simX.mouse[i-1, j] + mouse.rat * simX.rat[i-1, j]) * td[i]
+     }
+   }
+
+  # priors
+   mu.Ntau.rat ~ dnorm(0, 0.001)T(0, )
+   r.rat ~ dnorm(0, 0.001)T(0, )
+   beta.seed.rat ~ dnorm(0, 0.01)
+   d.rat ~ dnorm(0, 0.01)T(0, )
+   m.rat ~ dnorm(0, 0.01)T(0, )
+   rat.poss ~ dnorm(0, 0.01)
+
+   mu.Ntau.poss ~ dnorm(0, 0.001)T(0, )
+   r.poss ~ dnorm(0, 0.001)T(0, )
+   beta.seed.poss ~ dnorm(0, 0.01)
+   d.poss ~ dnorm(0, 0.01)T(0, )
+   poss.rat ~ dnorm(0, 0.01)
+
+   mu.Ntau.mouse ~ dnorm(0, 0.001)T(0, )
+   r.mouse ~ dnorm(0, 0.001)T(0, )
+   beta.seed.mouse ~ dnorm(0, 0.01)
+   d.mouse ~ dnorm(0, 0.01)T(0, )
+   mouse.rat ~ dnorm(0, 0.01)
+
+   alpha1 ~ dnorm(0, 0.001)
+
+   for(i in 1:11) {
+     tau[i] <- 1 / (sigma[i] * sigma[i])
+     sigma[i] ~ dunif(0, 100)
+   }
+
+  }"
+
+
+# write model
+  write(mod, "model.txt")
+
+# run the model in JAGS with three chains
+  mod.jags <- jags(model = "model.txt",
+              data = list(N.rat = N.rat, Ntau.rat = Ntau.rat, 
+                          N.poss = N.poss, Ntau.poss = Ntau.poss,
+                          N.mouse = N.mouse, Ntau.mouse = Ntau.mouse,
+                          seed = nseed, nGrids = nGrids, nYears = nYears, lag = lag.sp, td = td, prr = prr),
+              param = c("r.rat", "d.rat", "m.rat", "beta.seed.rat", "rat.poss", 
+                        "r.poss", "d.poss", "beta.seed.poss", "poss.rat", 
+                        "r.mouse", "d.mouse", "beta.seed.mouse", "mouse.rat",
+                        "sigma", "seed",
+                        "X.rat", "simX.rat", 
+                        "X.poss", "simX.poss",
+                        "X.mouse", "simX.mouse"),
+              n.chains = 3,
+              n.iter = 30000,
+              n.burnin = 10000,
+              parallel = TRUE)
+```
+
+Let's simulate!
+
+```{r}
+txtstring <- '
+data{
+for(j in 1:nGrids) {
+    for(i in 2:nYears) {
+       X.rat[i, j] ~ dnorm(predX.rat[i, j], tau[6])
+       predX.rat[i, j] <- X.rat[i-1, j] + (r.rat + beta.seed.rat * (seed[i-lag, j]) - d.rat * X.rat[i-1, j] - m.rat * prr[j] + rat.poss * X.poss[i-1, j]) * td[i]
+
+       simX.rat[i, j] ~ dnorm(predsimX.rat[i, j], tau[6])
+       predsimX.rat[i, j] <- simX.rat[i-1, j] + (r.rat + beta.seed.rat * (seed[i-lag, j]) - d.rat * simX.rat[i-1, j] - m.rat * prr[j] + rat.poss * simX.poss[i-1, j]) * td[i]
+
+       X.poss[i, j] ~ dnorm(predX.poss[i, j], tau[7])
+       predX.poss[i, j] <- X.poss[i-1, j] + (r.poss + beta.seed.poss * (seed[i-lag, j]) - d.poss * X.poss[i-1, j] + poss.rat * X.rat[i-1, j]) * td[i]
+
+       simX.poss[i, j] ~ dnorm(predsimX.poss[i, j], tau[7])
+       predsimX.poss[i, j] <- simX.poss[i-1, j] + (r.poss + beta.seed.poss * (seed[i-lag, j]) - d.poss * simX.poss[i-1, j] + poss.rat * simX.rat[i-1, j]) * td[i]
+
+       X.mouse[i, j] ~ dnorm(predX.mouse[i, j], tau[8])
+       predX.mouse[i, j] <- X.mouse[i-1, j] + (r.mouse + beta.seed.mouse * (seed[i-lag, j]) - d.mouse * X.mouse[i-1, j] + mouse.rat * X.rat[i-1, j]) * td[i]
+
+       simX.mouse[i, j] ~ dnorm(predsimX.mouse[i, j], tau[8])
+       predsimX.mouse[i, j] <- simX.mouse[i-1, j] + (r.mouse + beta.seed.mouse * (seed[i-lag, j]) - d.mouse * simX.mouse[i-1, j] + mouse.rat * simX.rat[i-1, j]) * td[i]
+     }
+   }
+   
+# Observation model
+   for(i in 1:nYears) {
+     for(j in 1:nGrids) {
+       Ntau.rat[i, j] ~ dnorm(mu.Ntau.rat, tau[1])           
+       N.rat[i, j] ~ dnorm(X.rat[i, j], tau[9])     
+
+       Ntau.poss[i, j] ~ dnorm(mu.Ntau.poss, tau[2])           
+       N.poss[i, j] ~ dnorm(X.poss[i, j], tau[10])     
+
+       Ntau.mouse[i, j] ~ dnorm(mu.Ntau.mouse, tau[2])           
+       N.mouse[i, j] ~ dnorm(X.mouse[i, j], tau[11])     
+
+       # model seed as an overall mean (alpha1), an offset for each year (alpha2) and an offset for each grid (alpha3)
+       seed[i, j] ~ dnorm(mu.r[i, j], tau[3])
+       mu.r[i, j] <- alpha1 + alpha2[i] + alpha3[j]
+     }
+   }
+
+# priors for the observation and seed models
+   for(i in 1:nYears) {
+     alpha2[i] ~ dnorm(0, tau[4])
+   }
+
+   for(j in 1:nGrids) {
+     alpha3[j] ~ dnorm(0, tau[5])}
+     
+   for(i in 1:11) {
+     tau[i] <- 1 / (sigma[i] * sigma[i])
+     sigma[i] ~ dunif(0, 100)
+   }
+}  
+model{
+fake <- 2
+}  
+'
+```
+
+```{r}
+mod <- "model {
+
+   # Observation model
+   for(i in 1:nYears) {
+     for(j in 1:nGrids) {
+       Ntau.rat[i, j] ~ dnorm(mu.Ntau.rat, tau[1])           
+       N.rat[i, j] ~ dnorm(X.rat[i, j], tau[9])     
+
+       Ntau.poss[i, j] ~ dnorm(mu.Ntau.poss, tau[2])           
+       N.poss[i, j] ~ dnorm(X.poss[i, j], tau[10])     
+
+       Ntau.mouse[i, j] ~ dnorm(mu.Ntau.mouse, tau[2])           
+       N.mouse[i, j] ~ dnorm(X.mouse[i, j], tau[11])     
+
+       # model seed as an overall mean (alpha1), an offset for each year (alpha2) and an offset for each grid (alpha3)
+       seed[i, j] ~ dnorm(mu.r[i, j], tau[3])
+       mu.r[i, j] <- alpha1 + alpha2[i] + alpha3[j]
+     }
+   }
+   
+  # priors for the observation and seed models
+   for(i in 1:nYears) {
+     alpha2[i] ~ dnorm(0, tau[4])
+   }
+
+   for(j in 1:nGrids) {
+     alpha3[j] ~ dnorm(0, tau[5])
+     
+     X.rat[1, j] ~ dnorm(0, 0.1) 
+     simX.rat[1, j] <- X.rat[1, j]    
+     
+     X.poss[1, j] ~ dnorm(0, 0.1) 
+     simX.poss[1, j] <- X.poss[1, j]    
+
+     X.mouse[1, j] ~ dnorm(0, 0.1) 
+     simX.mouse[1, j] <- X.mouse[1, j]    
+   }
+   
+   # Process model
+   for(j in 1:nGrids) {
+     for(i in 2:nYears) {
+
+       X.rat[i, j] ~ dnorm(predX.rat[i, j], tau[6])
+       predX.rat[i, j] <- X.rat[i-1, j] + (r.rat + beta.seed.rat * (seed[i-lag, j]) - d.rat * X.rat[i-1, j] - m.rat * prr[j] + rat.poss * X.poss[i-1, j]) * td[i]
+
+       simX.rat[i, j] ~ dnorm(predsimX.rat[i, j], tau[6])
+       predsimX.rat[i, j] <- simX.rat[i-1, j] + (r.rat + beta.seed.rat * (seed[i-lag, j]) - d.rat * simX.rat[i-1, j] - m.rat * prr[j] + rat.poss * simX.poss[i-1, j]) * td[i]
+
+       X.poss[i, j] ~ dnorm(predX.poss[i, j], tau[7])
+       predX.poss[i, j] <- X.poss[i-1, j] + (r.poss + beta.seed.poss * (seed[i-lag, j]) - d.poss * X.poss[i-1, j] + poss.rat * X.rat[i-1, j]) * td[i]
+
+       simX.poss[i, j] ~ dnorm(predsimX.poss[i, j], tau[7])
+       predsimX.poss[i, j] <- simX.poss[i-1, j] + (r.poss + beta.seed.poss * (seed[i-lag, j]) - d.poss * simX.poss[i-1, j] + poss.rat * simX.rat[i-1, j]) * td[i]
+
+       X.mouse[i, j] ~ dnorm(predX.mouse[i, j], tau[8])
+       predX.mouse[i, j] <- X.mouse[i-1, j] + (r.mouse + beta.seed.mouse * (seed[i-lag, j]) - d.mouse * X.mouse[i-1, j] + mouse.rat * X.rat[i-1, j]) * td[i]
+
+       simX.mouse[i, j] ~ dnorm(predsimX.mouse[i, j], tau[8])
+       predsimX.mouse[i, j] <- simX.mouse[i-1, j] + (r.mouse + beta.seed.mouse * (seed[i-lag, j]) - d.mouse * simX.mouse[i-1, j] + mouse.rat * simX.rat[i-1, j]) * td[i]
+     }
+   }
+
+  # priors
+   mu.Ntau.rat ~ dnorm(0, 0.001)T(0, )
+   r.rat ~ dnorm(0, 0.001)T(0, )
+   beta.seed.rat ~ dnorm(0, 0.01)
+   d.rat ~ dnorm(0, 0.01)T(0, )
+   m.rat ~ dnorm(0, 0.01)T(0, )
+   rat.poss ~ dnorm(0, 0.01)
+
+   mu.Ntau.poss ~ dnorm(0, 0.001)T(0, )
+   r.poss ~ dnorm(0, 0.001)T(0, )
+   beta.seed.poss ~ dnorm(0, 0.01)
+   d.poss ~ dnorm(0, 0.01)T(0, )
+   poss.rat ~ dnorm(0, 0.01)
+
+   mu.Ntau.mouse ~ dnorm(0, 0.001)T(0, )
+   r.mouse ~ dnorm(0, 0.001)T(0, )
+   beta.seed.mouse ~ dnorm(0, 0.01)
+   d.mouse ~ dnorm(0, 0.01)T(0, )
+   mouse.rat ~ dnorm(0, 0.01)
+
+   alpha1 ~ dnorm(0, 0.001)
+
+   for(i in 1:11) {
+     tau[i] <- 1 / (sigma[i] * sigma[i])
+     sigma[i] ~ dunif(0, 100)
+   }
+
+  }"
+
+
+# write model
+  write(mod, "model.txt")
+
+# run the model in JAGS with three chains
+  mod.jags <- jags(model = "model.txt",
+              data = list(N.rat = N.rat, Ntau.rat = Ntau.rat, 
+                          N.poss = N.poss, Ntau.poss = Ntau.poss,
+                          N.mouse = N.mouse, Ntau.mouse = Ntau.mouse,
+                          seed = nseed, nGrids = nGrids, nYears = nYears, lag = lag.sp, td = td, prr = prr),
+              param = c("r.rat", "d.rat", "m.rat", "beta.seed.rat", "rat.poss", 
+                        "r.poss", "d.poss", "beta.seed.poss", "poss.rat", 
+                        "r.mouse", "d.mouse", "beta.seed.mouse", "mouse.rat",
+                        "sigma", "seed",
+                        "X.rat", "simX.rat", 
+                        "X.poss", "simX.poss",
+                        "X.mouse", "simX.mouse"),
+              n.chains = 3,
+              n.iter = 30000,
+              n.burnin = 10000,
+              parallel = TRUE)
+```
+
+```{r}
+# mod <- `model {
+# 
+#    # Observation model
+#    for(i in 1:nYears) {
+#      for(j in 1:nGrids) {
+#        Ntau.rat[i, j] ~ dnorm(mu.Ntau.rat, tau[1])           
+#        N.rat[i, j] ~ dnorm(X.rat[i, j], tau[9])     
+# 
+#        Ntau.poss[i, j] ~ dnorm(mu.Ntau.poss, tau[2])           
+#        N.poss[i, j] ~ dnorm(X.poss[i, j], tau[10])     
+# 
+#        Ntau.mouse[i, j] ~ dnorm(mu.Ntau.mouse, tau[2])           
+#        N.mouse[i, j] ~ dnorm(X.mouse[i, j], tau[11])     
+# 
+#        # model seed as an overall mean (alpha1), an offset for each year (alpha2) and an offset for each grid (alpha3)
+#        seed[i, j] ~ dnorm(mu.r[i, j], tau[3])
+#        mu.r[i, j] <- alpha1 + alpha2[i] + alpha3[j]
+#      }
+#    }
+#    
+#   # priors for the observation and seed models
+#    for(i in 1:nYears) {
+#      alpha2[i] ~ dnorm(0, tau[4])
+#    }
+# 
+#    for(j in 1:nGrids) {
+#      alpha3[j] ~ dnorm(0, tau[5])
+#      
+#      X.rat[1, j] ~ dnorm(0, 0.1) 
+#      simX.rat[1, j] <- X.rat[1, j]    
+#      
+#      X.poss[1, j] ~ dnorm(0, 0.1) 
+#      simX.poss[1, j] <- X.poss[1, j]    
+# 
+#      X.mouse[1, j] ~ dnorm(0, 0.1) 
+#      simX.mouse[1, j] <- X.mouse[1, j]    
+#    }
+#    
+#    # Process model
+#    for(j in 1:nGrids) {
+#      for(i in 2:nYears) {
+# 
+#        X.rat[i, j] ~ dnorm(predX.rat[i, j], tau[6])
+#        predX.rat[i, j] <- X.rat[i-1, j] + (r.rat + beta.seed.rat * (seed[i-lag, j]) - d.rat * X.rat[i-1, j] - m.rat * prr[j] + rat.poss * X.poss[i-1, j]) * td[i]
+# 
+#        simX.rat[i, j] ~ dnorm(predsimX.rat[i, j], tau[6])
+#        predsimX.rat[i, j] <- simX.rat[i-1, j] + (r.rat + beta.seed.rat * (seed[i-lag, j]) - d.rat * simX.rat[i-1, j] - m.rat * prr[j] + rat.poss * simX.poss[i-1, j]) * td[i]
+# 
+#        X.poss[i, j] ~ dnorm(predX.poss[i, j], tau[7])
+#        predX.poss[i, j] <- X.poss[i-1, j] + (r.poss + beta.seed.poss * (seed[i-lag, j]) - d.poss * X.poss[i-1, j] + poss.rat * X.rat[i-1, j]) * td[i]
+# 
+#        simX.poss[i, j] ~ dnorm(predsimX.poss[i, j], tau[7])
+#        predsimX.poss[i, j] <- simX.poss[i-1, j] + (r.poss + beta.seed.poss * (seed[i-lag, j]) - d.poss * simX.poss[i-1, j] + poss.rat * simX.rat[i-1, j]) * td[i]
+# 
+#        X.mouse[i, j] ~ dnorm(predX.mouse[i, j], tau[8])
+#        predX.mouse[i, j] <- X.mouse[i-1, j] + (r.mouse + beta.seed.mouse * (seed[i-lag, j]) - d.mouse * X.mouse[i-1, j] + mouse.rat * X.rat[i-1, j]) * td[i]
+# 
+#        simX.mouse[i, j] ~ dnorm(predsimX.mouse[i, j], tau[8])
+#        predsimX.mouse[i, j] <- simX.mouse[i-1, j] + (r.mouse + beta.seed.mouse * (seed[i-lag, j]) - d.mouse * simX.mouse[i-1, j] + mouse.rat * simX.rat[i-1, j]) * td[i]
+#      }
+#    }
+# 
+#   # priors
+#    mu.Ntau.rat ~ dnorm(0, 0.001)T(0, )
+#    r.rat ~ dnorm(0, 0.001)T(0, )
+#    beta.seed.rat ~ dnorm(0, 0.01)
+#    d.rat ~ dnorm(0, 0.01)T(0, )
+#    m.rat ~ dnorm(0, 0.01)T(0, )
+#    rat.poss ~ dnorm(0, 0.01)
+# 
+#    mu.Ntau.poss ~ dnorm(0, 0.001)T(0, )
+#    r.poss ~ dnorm(0, 0.001)T(0, )
+#    beta.seed.poss ~ dnorm(0, 0.01)
+#    d.poss ~ dnorm(0, 0.01)T(0, )
+#    poss.rat ~ dnorm(0, 0.01)
+# 
+#    mu.Ntau.mouse ~ dnorm(0, 0.001)T(0, )
+#    r.mouse ~ dnorm(0, 0.001)T(0, )
+#    beta.seed.mouse ~ dnorm(0, 0.01)
+#    d.mouse ~ dnorm(0, 0.01)T(0, )
+#    mouse.rat ~ dnorm(0, 0.01)
+# 
+#    alpha1 ~ dnorm(0, 0.001)
+# 
+#    for(i in 1:11) {
+#      tau[i] <- 1 / (sigma[i] * sigma[i])
+#      sigma[i] ~ dunif(0, 100)
+#    }
+#    
+# model{
+# fake <- 0
+# 
+# } 
+# }
+# `
+```
+
+Let's pick some values for parameters and store them in a data list:
+
+```{r}
+### Selecting data for model 
+## do this by just taking average starting values?
+# run the model in JAGS with three chains
+# N.rat = c(1, 1) 
+# Ntau.rat = 0.1
+# N.poss = c(1, 1) 
+# Ntau.poss = 0.1
+# N.mouse = c(1, 1) 
+# Ntau.mouse = .1
+# seed = c(1, 1) 
+# nGrids = 1
+# nYears = 30
+# lag = 0
+# td = 4
+# prr = 4
+
+data <- list(N.rat = N.rat, Ntau.rat = Ntau.rat,N.poss = N.poss, Ntau.poss = Ntau.poss, N.mouse = N.mouse, Ntau.mouse = Ntau.mouse, seed = seed, nGrids = nGrids, nYears = nYears, lag = lag.sp, td = td, prr = prr)
+
+param <- c("r.rat", "d.rat", "m.rat", "beta.seed.rat", "rat.poss", "r.poss", "d.poss", "beta.seed.poss", "poss.rat", "r.mouse", "d.mouse", "beta.seed.mouse", "mouse.rat", "sigma", "seed", "X.rat", "simX.rat","X.poss", "simX.poss", "X.mouse", "simX.mouse")
+
+
+# # parameter for simulations 
+# n.occasions = 10 # nb of occasions
+# nind = 100 # nb of individuals
+# mean.phi <- 0.8 # survival
+# mean.p <- 0.6 # recapture
+# f = rep(1,nind) # date of first capture
+# data<-list(n.occasions = n.occasions, mean.phi = mean.phi, mean.p = mean.p, f = f, nind = nind)
+
+
+
+# runjags::run.jags(model = txtstring, data = data, monitor = "r.rat", n.chains = 1, summarise = F)
+```
+
+Now run `Jags`:
+
+```{r}
+# out <- run.jags(txtstring, data = data,monitor=c("y"),sample=1, n.chains=1, summarise=FALSE)
+```
+
+Format the output:
+```{r}
+# Simulated <- coda::as.mcmc(out)
+# dim(Simulated)
+# dat = matrix(Simulated,nrow=nind)
+# head(dat)
+```
+
+Here I monitored only the detections and non-detections, but it is also possible to get the simulated values for the states, i.e. whether an individual is alive or dead at each occasion. You just need to amend the call to `Jags` with `monitor=c("y","x")` and to amend the output accordingly. 
+
+Now we fit a Cormack-Jolly-Seber model to the data we've just simulated, assuming constant parameters:
+```{r}
+model <- 	
+paste("	
+model {
+# Priors and constraints
+for (i in 1:nind){
+   for (t in f[i]:(n.occasions-1)){
+      phi[i,t] <- mean.phi
+      p[i,t] <- mean.p
+      } #t
+   } #i
+mean.phi ~ dunif(0, 1)         # Prior for mean survival
+mean.p ~ dunif(0, 1)           # Prior for mean recapture
+# Likelihood 
+for (i in 1:nind){
+   # Define latent state at first capture
+   z[i,f[i]] <- 1
+   for (t in (f[i]+1):n.occasions){
+      # State process
+      z[i,t] ~ dbern(mu1[i,t])
+      mu1[i,t] <- phi[i,t-1] * z[i,t-1]
+      # Observation process
+      y[i,t] ~ dbern(mu2[i,t])
+      mu2[i,t] <- p[i,t-1] * z[i,t]
+      } #t
+   } #i
+}
+")
+writeLines(model,"cjs.jags")	
+```
+
+Prepare the data:
+```{r}
+# vector with occasion of marking
+get.first <- function(x) min(which(x!=0))
+f <- apply(dat, 1, get.first)
+# data
+jags.data <- list(y = dat, f = f, nind = dim(dat)[1], n.occasions = dim(dat)[2])
+```
+
+```{r}
+# Initial values
+known.state.cjs <- function(ch){
+   state <- ch
+   for (i in 1:dim(ch)[1]){
+      n1 <- min(which(ch[i,]==1))
+      n2 <- max(which(ch[i,]==1))
+      state[i,n1:n2] <- 1
+      state[i,n1] <- NA
+      }
+   state[state==0] <- NA
+   return(state)
+   }
+inits <- function(){list(mean.phi = runif(1, 0, 1), mean.p = runif(1, 0, 1), z = known.state.cjs(dat))}
+```
+
+We'd like to carry out inference about survival and recapture probabilities:
+```{r}
+parameters <- c("mean.phi", "mean.p")
+```
+
+Standard MCMC settings:
+```{r}
+ni <- 10000
+nt <- 6
+nb <- 5000
+nc <- 2
+```
+
+Ready to run `Jags`!
+```{r}
+# Call JAGS from R (BRT 1 min)
+# cjs <- jags(jags.data, inits, parameters, "cjs.jags", n.chains = nc, n.thin = nt, n.iter = ni, n.burnin = nb, working.directory = getwd())
+```
+
+Summarize posteriors and compare to the values we used to simulate the data:
+
+```{r}
+print(cjs, digits = 3)
+```
+
+Again pretty close!
+
+Trace plots
+
+```{r}
+traplot(cjs,c("mean.phi", "mean.p"))
+```
+
+Posterior distribution plots:
+```{r}
+denplot(cjs,c("mean.phi", "mean.p"))
+```
